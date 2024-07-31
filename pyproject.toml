@@ -3,7 +3,7 @@ requires = ["setuptools~=69.2.0", "wheel~=0.43.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name              = "networkdevices"
+name              = "dbus_networkdevices"
 version           = "2024.7.0"
 description       = "Connected network devices using DBus"
 readme            = "README.md"
@@ -24,7 +24,7 @@ dependencies = [
 
 
 [project.urls]
-"Source Code" = "https://github.com/bkbilly/networkdevices"
+"Source Code" = "https://github.com/bkbilly/dbus_networkdevices"
 
 [tool.setuptools.packages.find]
 include = ["dbus_networkdevices*"]
