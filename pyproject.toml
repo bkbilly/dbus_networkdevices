@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools~=69.2.0", "wheel~=0.43.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name              = "networkdevices"
+version           = "2024.7.0"
+description       = "Connected network devices using DBus"
+readme            = "README.md"
+keywords          = ["dbus", "ip", "network"]
+requires-python   = ">=3.7.0"
+authors     = [
+    {name="bkbilly", email="bkbilly@hotmail.com"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Unix",
+]
+dependencies = [
+    "dasbus>=1.7",
+    "PyGObject>=3.44.0"
+]
+
+
+[project.urls]
+"Source Code" = "https://github.com/bkbilly/networkdevices"
+
+[tool.setuptools.packages.find]
+include = ["dbus_networkdevices*"]
+
+[project.scripts]
+dbus-networkdevices = "dbus_networkdevices.__main__:main"
