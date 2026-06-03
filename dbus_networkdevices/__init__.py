@@ -1,7 +1,15 @@
 import threading
-from dasbus.loop import EventLoop
-from dasbus.client.handler import GLibClient
-from dasbus.connection import SystemMessageBus
+from jeepney import DBusAddress, MatchRule, Properties, message_bus
+from jeepney.io.blocking import open_dbus_connection
+
+NM_BUS = 'org.freedesktop.NetworkManager'
+
+
+def _get_prop(conn, object_path, interface, prop):
+    addr = DBusAddress(object_path, bus_name=NM_BUS, interface=interface)
+    reply = conn.send_and_get_reply(Properties(addr).get(prop))
+    # Properties.Get returns a variant (type_signature, value)
+    return reply.body[0][1]
 
 
 class DBUSNetworkDevices():
@@ -9,108 +17,96 @@ class DBUSNetworkDevices():
 
     def __init__(self, callback=None):
         self.callback = callback
-        self.bus = SystemMessageBus()
 
         if self.callback is not None:
             self.prev_send = None
-            GLibClient.subscribe_signal(
-                self.bus.connection,
-                service_name=None,
-                object_path="/org/freedesktop",
-                interface_name="org.freedesktop.DBus.ObjectManager",
-                signal_name="InterfacesAdded",
-                callback=self.dbus_callback,
-            )
-            GLibClient.subscribe_signal(
-                self.bus.connection,
-                service_name=None,
-                object_path="/org/freedesktop",
-                interface_name="org.freedesktop.DBus.ObjectManager",
-                signal_name="InterfacesRemoved",
-                callback=self.dbus_callback,
-            )
-            GLibClient.subscribe_signal(
-                self.bus.connection,
-                service_name=None,
-                object_path="/org/freedesktop/resolve1",
-                interface_name="org.freedesktop.DBus.Properties",
-                signal_name="PropertiesChanged",
-                callback=self.dbus_callback,
-            )
-            self.dbus_callback(None)
-            loop = EventLoop()
-            threading.Thread(target=loop.run, daemon=True).start()
+            self.signal_conn = open_dbus_connection(bus='SYSTEM')
 
-    def dbus_callback(self, iface):
-        self.network_devices = self.get_network_devices()
+            for rule in [
+                MatchRule(type='signal', interface='org.freedesktop.DBus.ObjectManager',
+                          member='InterfacesAdded', path_namespace='/org/freedesktop'),
+                MatchRule(type='signal', interface='org.freedesktop.DBus.ObjectManager',
+                          member='InterfacesRemoved', path_namespace='/org/freedesktop'),
+                MatchRule(type='signal', interface='org.freedesktop.DBus.Properties',
+                          member='PropertiesChanged', path='/org/freedesktop/resolve1'),
+            ]:
+                self.signal_conn.send_and_get_reply(message_bus.AddMatch(rule))
+
+            self.dbus_callback()
+            threading.Thread(target=self._signal_loop, daemon=True).start()
+
+    def _signal_loop(self):
+        while True:
+            self.signal_conn.recv_messages()
+            try:
+                self.dbus_callback()
+            except Exception:
+                pass
+
+    def dbus_callback(self):
+        conn = open_dbus_connection(bus='SYSTEM')
+        self.network_devices = self.get_network_devices(conn)
         if self.prev_send != self.network_devices:
             self.prev_send = self.network_devices
             self.callback(self.network_devices)
 
-    def get_network_devices(self):
-        proxy = self.bus.get_proxy(
-            service_name="org.freedesktop.NetworkManager",
-            object_path="/org/freedesktop/NetworkManager",
-            interface_name="org.freedesktop.DBus.Properties",
+    def get_network_devices(self, conn=None):
+        if conn is None:
+            conn = open_dbus_connection(bus='SYSTEM')
+
+        active_connections = _get_prop(
+            conn,
+            '/org/freedesktop/NetworkManager',
+            NM_BUS,
+            'ActiveConnections',
         )
-        active_connections = proxy.Get("org.freedesktop.NetworkManager", "ActiveConnections")
+
         networkdevices = []
         for connection in active_connections:
-            net_proxy = self.bus.get_proxy(
-                service_name="org.freedesktop.NetworkManager",
-                object_path=connection,
-                interface_name="org.freedesktop.NetworkManager.Connection.Active",
-            )
-            networkdevice = {
-                "name": net_proxy.Id,
-                "type": net_proxy.Type,
-            }
-            if "AccessPoint" in net_proxy.SpecificObject:
-                wifi_proxy = self.bus.get_proxy(
-                    service_name="org.freedesktop.NetworkManager",
-                    object_path=net_proxy.SpecificObject,
-                    interface_name="org.freedesktop.NetworkManager.AccessPoint",
-                )
+            name = _get_prop(conn, connection, 'org.freedesktop.NetworkManager.Connection.Active', 'Id')
+            conn_type = _get_prop(conn, connection, 'org.freedesktop.NetworkManager.Connection.Active', 'Type')
+            specific_object = _get_prop(conn, connection, 'org.freedesktop.NetworkManager.Connection.Active', 'SpecificObject')
+            devices = _get_prop(conn, connection, 'org.freedesktop.NetworkManager.Connection.Active', 'Devices')
+
+            networkdevice = {"name": name, "type": conn_type}
+
+            if "AccessPoint" in specific_object:
+                strength = _get_prop(conn, specific_object, 'org.freedesktop.NetworkManager.AccessPoint', 'Strength')
+                hw_address = _get_prop(conn, specific_object, 'org.freedesktop.NetworkManager.AccessPoint', 'HwAddress')
+                frequency = _get_prop(conn, specific_object, 'org.freedesktop.NetworkManager.AccessPoint', 'Frequency')
                 networkdevice["wifi"] = {
-                    "ssid": net_proxy.Id,
-                    "strength": wifi_proxy.Strength,
-                    "mac": wifi_proxy.HwAddress,
-                    "freq": wifi_proxy.Frequency,
+                    "ssid": name,
+                    "strength": strength,
+                    "mac": hw_address,
+                    "freq": frequency,
                 }
 
             interfaces = []
             ipv4 = []
             ipv6 = []
-            for device in net_proxy.Devices:
-                dev_proxy = self.bus.get_proxy(
-                    service_name="org.freedesktop.NetworkManager",
-                    object_path=device,
-                    interface_name="org.freedesktop.NetworkManager.Device",
-                )
-                interfaces.append(dev_proxy.Interface)
+            for device in devices:
+                iface = _get_prop(conn, device, 'org.freedesktop.NetworkManager.Device', 'Interface')
+                ip4_config = _get_prop(conn, device, 'org.freedesktop.NetworkManager.Device', 'Ip4Config')
+                ip6_config = _get_prop(conn, device, 'org.freedesktop.NetworkManager.Device', 'Ip6Config')
+                interfaces.append(iface)
 
-                ip4_proxy = self.bus.get_proxy(
-                    service_name="org.freedesktop.NetworkManager",
-                    object_path=dev_proxy.Ip4Config,
-                    interface_name="org.freedesktop.NetworkManager.IP4Config",
-                )
-                if len(ip4_proxy.AddressData) > 0:
-                    address4 = ip4_proxy.AddressData[0]["address"].get_string()
-                    prefix4 = ip4_proxy.AddressData[0]["prefix"].get_uint32()
-                    ipv4.append(f"{address4}/{prefix4}")
+                if ip4_config != '/':
+                    address_data4 = _get_prop(conn, ip4_config, 'org.freedesktop.NetworkManager.IP4Config', 'AddressData')
+                    if address_data4:
+                        address4 = address_data4[0]["address"][1]
+                        prefix4 = address_data4[0]["prefix"][1]
+                        ipv4.append(f"{address4}/{prefix4}")
 
-                ip6_proxy = self.bus.get_proxy(
-                    service_name="org.freedesktop.NetworkManager",
-                    object_path=dev_proxy.Ip6Config,
-                    interface_name="org.freedesktop.NetworkManager.IP6Config",
-                )
-                if len(ip6_proxy.AddressData) > 0:
-                    address6 = ip6_proxy.AddressData[0]["address"].get_string()
-                    prefix6 = ip6_proxy.AddressData[0]["prefix"].get_uint32()
-                    ipv6.append(f"{address6}/{prefix6}")
+                if ip6_config != '/':
+                    address_data6 = _get_prop(conn, ip6_config, 'org.freedesktop.NetworkManager.IP6Config', 'AddressData')
+                    if address_data6:
+                        address6 = address_data6[0]["address"][1]
+                        prefix6 = address_data6[0]["prefix"][1]
+                        ipv6.append(f"{address6}/{prefix6}")
+
             networkdevice["interface"] = ",".join(interfaces)
             networkdevice["ipv4"] = ",".join(ipv4)
             networkdevice["ipv6"] = ",".join(ipv6)
-
             networkdevices.append(networkdevice)
+
         return networkdevices

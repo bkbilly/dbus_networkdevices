@@ -14,7 +14,7 @@ The `dbus-networkdevices` library empowers Python applications to get the active
 ## Requirements
 
 * Python 3.7 or later
-* `dasdbus` library
+* `jeepney` library
 
 ## Installation
 
@@ -30,7 +30,11 @@ This library offers two primary usage approaches:
 
 ### Command-Line Interaction
 
-If you prefer a quick way to view information or control playback, you can potentially execute the dbus-networkdevices script directly. For more extensive programmatic control, I would recommend using the library within your Python code.
+Run the script directly to print active network devices as JSON:
+
+```bash
+dbus-networkdevices
+```
 
 ### Programmatic Control
 
@@ -38,6 +42,7 @@ Import the DBUSNetworkDevices class from your Python code:
 
 ```python
 import json
+import time
 from dbus_networkdevices import DBUSNetworkDevices
 
 def callback(devices):
